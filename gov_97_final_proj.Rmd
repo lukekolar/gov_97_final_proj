@@ -314,23 +314,48 @@ data_compiled <- full_join(counties, nonmetro_status) %>%
   full_join(all_elections) %>% 
   mutate(year = as.numeric(year)) %>% 
   filter(rucc_cat == "mostly rural") %>% 
-  full_join(all_dem_dat, by = c("name", "state", "year"))
+  full_join(all_dem_dat, by = c("name", "state", "year")) %>% 
+  filter(!is.na(office))
+
+viewer <- full_join(counties, nonmetro_status) %>%
+  full_join(rucc_status)
 
 # elections viewer
-data_compiled %>% 
+viewer %>% 
   mutate(rucc = as.numeric(rucc)) %>%
   ggplot(.) + geom_sf(aes(fill = rucc_cat)) + theme_void() + 
-  labs(fill = "Type")
+  theme(legend.position = "none")
 
-data_compiled %>% distinct(name)
+ggsave("f1.png")
+
+data_compiled %>% 
+  select(!geometry) %>% 
+  as_tibble() %>% 
+  group_by(name, state) %>% 
+  summarize(avg = mean(change)) %>% 
 
 ```
 
 ```{r}
 
+data_compiled %>% 
+  ggplot(aes(x = change, y = rep_perc, shape = office, color = non_hisp_white)) + 
+  geom_point()
 
-stargazer(lm(rep_perc ~ change + non_hisp_white + year + office + state, 
-             data = data_compiled %>% mutate(year = as.factor(year))), type = "text")
+mod <- lm(rep_perc ~ change + non_hisp_white + year, 
+          data = data_compiled %>% 
+            mutate(year = as.factor(year)) %>% 
+            filter(!is.na(office)))
+
+stargazer(mod, type = "text")
+
+stargazer(mod, type = "html", out = "regression.html",
+          covariate.labels = c("Annual pop. change", "% Non-Hispanic white",
+                               "Year: 2002", "Year: 2004", "Year: 2006", 
+                               "Year: 2008", "Year: 2010", "Year: 2012",
+                               "Year: 2014", "Year: 2016", "Year: 2018", 
+                               "Year: 2020"),
+          dep.var.labels   = "% Republican vote share")
 
 ```
 
