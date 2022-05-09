@@ -1,0 +1,386 @@
+---
+title: 'Gov 97: Polarization - Final Project'
+author: "Luke Kolar"
+date: "5/8/2022"
+output: html_document
+---
+
+```{r}
+
+library(janitor)
+library(sf)
+library(rgdal)
+library(viridis)
+library(stargazer)
+
+library(shapefiles)
+library(tidyverse)
+library(readxl)
+
+```
+
+```{r}
+
+michigan_counties_raw <- readOGR( 
+  dsn = paste0(getwd(),"/data/michigan_counties/"), 
+  layer = "Counties_(v17a)",
+  verbose = FALSE) 
+
+michigan_counties_messy <- spTransform(michigan_counties_raw, 
+            CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+michigan_counties_sf <- st_as_sf(michigan_counties_messy)
+
+michigan_counties <- michigan_counties_sf %>%
+  clean_names() %>% 
+  group_by(name) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  ungroup() %>% 
+  mutate(state = "MI")
+
+michigan_counties %>% 
+  ggplot(.) + geom_sf() + theme_void()
+
+```
+
+```{r}
+
+minnesota_counties_raw <- readOGR( 
+  dsn = paste0(getwd(),"/data/minnesota_counties/"), 
+  layer = "mn_county_boundaries_1500",
+  verbose = FALSE) 
+
+minnesota_counties_messy <- spTransform(minnesota_counties_raw, 
+            CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+minnesota_counties_sf <- st_as_sf(minnesota_counties_messy)
+
+minnesota_counties <- minnesota_counties_sf %>%
+  clean_names() %>% 
+  rename(name = cty_name) %>% 
+  group_by(name) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  ungroup() %>% 
+  mutate(state = "MN")
+
+minnesota_counties %>% 
+  ggplot(.) + geom_sf() + theme_void()
+
+```
+
+```{r}
+
+wisconsin_counties_raw <- readOGR( 
+  dsn = paste0(getwd(),"/data/wisconsin_counties/"), 
+  layer = "County_Boundaries_24K",
+  verbose = FALSE)
+
+wisconsin_counties_messy <- spTransform(wisconsin_counties_raw, 
+            CRS("+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+wisconsin_counties_sf <- st_as_sf(wisconsin_counties_messy)
+
+wisconsin_counties <- wisconsin_counties_sf %>%
+  clean_names() %>% 
+  rename(name = county_nam) %>% 
+  group_by(name) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  ungroup() %>% 
+  mutate(state = "WI")
+
+wisconsin_counties %>% 
+  ggplot(.) + geom_sf() + theme_void()
+
+```
+
+```{r, warning = F, message = F}
+
+counties <- michigan_counties %>% 
+  rbind(minnesota_counties) %>% 
+  rbind(wisconsin_counties) %>% 
+  mutate(name = ifelse(name == "Saint Croix", "St. Croix", name)) %>% 
+  mutate(area_mi_sq = st_area(geometry) / 2.59e+6)
+
+nonmetro_status <- read.csv(paste0(getwd(),"/data/demographic/CountyTypologyCodes.csv")) %>% 
+  clean_names() %>% 
+  filter(state %in% c("MI", "MN", "WI")) %>% 
+  rename(metro = metro_nonmetro_status_2013_0_nonmetro_1_metro) %>% 
+  rename(name = county_name) %>% 
+  mutate(name = str_remove_all(name, " County")) %>% 
+  mutate(nonmetro = ifelse(metro == 1, F, T)) %>% 
+  select(name, nonmetro, state)
+  
+rucc_status <- read_excel(paste0(getwd(),"/data/demographic/ruralurbancodes2013.xls")) %>% 
+  clean_names() %>% 
+  filter(state %in% c("MI", "MN", "WI")) %>% 
+  rename(rucc = rucc_2013) %>% 
+  rename(name = county_name) %>% 
+  mutate(name = str_remove_all(name, " County")) %>% 
+  mutate(rucc = as.factor(rucc)) %>% 
+  select(name, rucc, state) %>% 
+  mutate(rucc_cat = ifelse(rucc %in% c(1:5), "other", "mostly rural"))
+
+```
+
+```{r}
+
+data_collect <- function(state, office){
+  
+  read.csv(paste0(getwd(), "/data/political/", state, "/", office, ".csv"), skip = 2) %>% 
+    clean_names() %>% 
+    mutate(race_date = substr(race_date, 1, 4),
+           area = str_to_title(area)) %>% 
+    rename(year = race_date) %>% 
+    rename(name = area) %>% 
+    rename(rep_perc = rep_votes_major_percent,
+           dem_perc = dem_votes_major_percent,
+           other_perc = third_votes_total_percent) %>% 
+    select(name, state, year, office, rep_perc, dem_perc, other_perc, 
+           rep_candidate, dem_candidate) %>%
+    mutate(year = gsub("(.*),.*", NA, year)) %>%
+    filter(!is.na(year)) %>% 
+    filter(!name == "Area") %>% 
+    filter(!name == "Demvotesall") %>% 
+    filter(!name == "") %>% 
+    filter(!name == " ") %>% 
+    filter(!name == "Absentee")
+
+}
+
+all_elections <- data_collect("michigan", "governors") %>% 
+  rbind(data_collect("michigan", "president")) %>% 
+  rbind(data_collect("michigan", "senate")) %>% 
+  rbind(data_collect("minnesota", "governors")) %>% 
+  rbind(data_collect("minnesota", "president")) %>% 
+  rbind(data_collect("minnesota", "senate")) %>% 
+  rbind(data_collect("wisconsin", "governors")) %>% 
+  rbind(data_collect("wisconsin", "president")) %>% 
+  rbind(data_collect("wisconsin", "senate")) %>% 
+  mutate(state = ifelse(state == "Michigan", "MI",
+                        ifelse(state == "Minnesota", "MN", "WI"))) %>% 
+  mutate(name = str_replace_all(name, " Of ", " of "), 
+         name = str_replace_all(name, " The ", " the "), 
+         name = str_replace_all(name, " Qui ", " qui "), 
+         name = str_replace_all(name, " Du ", " du "), 
+         name = str_replace_all(name, "Mcleod", "McLeod")) %>% 
+  mutate(rep_perc = as.numeric(rep_perc),
+         dem_perc = as.numeric(dem_perc),
+         other_perc = as.numeric(other_perc))
+
+all_elections %>% filter(state == "MN", year == "2020") %>% View()
+
+```
+
+```{r}
+
+get_pop <- function(state_var){
+  
+  pop20 <- read_xlsx(paste0(getwd(), "/data/demographic/", state_var, 
+                   "_pop21.xlsx"), skip = 2) %>% 
+    clean_names() %>% 
+    rename(name = geographic_area,
+           pop_2020 = population_estimate_as_of_july_1) %>% 
+    slice(-(1:2)) %>% 
+    mutate(state = ifelse(state_var == "michigan", "MI", ifelse(state_var == "minnesota",
+                                                            "MN", "WI"))) %>% 
+    select(name, state, pop_2020) %>% 
+    mutate(name = gsub("\\,.*", "", name),
+           name = gsub(" County", "", name),
+           name = gsub("\\.", "", name),
+           name = gsub("St ", "St. ", name)) %>% 
+    filter(!is.na(pop_2020))
+  
+  pop10_18 <- read_xlsx(paste0(getwd(), "/data/demographic/", state_var, 
+                        "_pop19.xlsx"), skip = 3) %>% 
+    clean_names() %>% 
+    rename(name = x1) %>% 
+    rename(pop_2010 = x2010, pop_2012 = x2012, pop_2014 = x2014,
+           pop_2016 = x2016, pop_2018 = x2018) %>% 
+    slice(-(1)) %>% 
+    mutate(state = ifelse(state_var == "michigan", "MI", ifelse(state_var == "minnesota",
+                                                            "MN", "WI"))) %>% 
+    select(name, state, pop_2010, pop_2012, pop_2014, pop_2016, pop_2018) %>% 
+    mutate(name = gsub("\\,.*", "", name),
+           name = gsub(" County", "", name),
+           name = gsub("\\.", "", name),
+           name = gsub("St ", "St. ", name)) %>% 
+    filter(!is.na(pop_2010))
+  
+  pop00_08 <- read_xls(paste0(getwd(), "/data/demographic/", state_var, 
+                        "_pop10.xls"), skip = 3) %>% 
+    clean_names() %>% 
+    rename(name = x1) %>% 
+    rename(pop_2000 = x2000, pop_2002 = x2002, pop_2004 = x2004,
+           pop_2006 = x2006, pop_2008 = x2008) %>% 
+    slice(-(1)) %>% 
+    mutate(state = ifelse(state_var == "michigan", "MI", ifelse(state_var == "minnesota",
+                                                            "MN", "WI"))) %>% 
+    select(name, state, pop_2000, pop_2002, pop_2004, pop_2006, pop_2008) %>% 
+    mutate(name = gsub("\\,.*", "", name),
+           name = gsub(" County", "", name),
+           name = gsub("\\.", "", name),
+           name = gsub("St ", "St. ", name)) %>% 
+    filter(!is.na(pop_2002))
+  
+  full_join(pop00_08, pop10_18, by = c("name", "state")) %>% 
+    full_join(pop20, by = c("name", "state"))
+  
+}
+
+all_pops <- rbind(get_pop("michigan"), get_pop("minnesota"), get_pop("wisconsin"))
+
+pop_change_data <- all_pops %>% 
+  mutate(change_2002 = ((pop_2002/pop_2000) - 1) * 100,
+         change_2004 = ((pop_2004/pop_2002) - 1) * 100,
+         change_2006 = ((pop_2006/pop_2004) - 1) * 100,
+         change_2008 = ((pop_2008/pop_2006) - 1) * 100,
+         change_2010 = ((pop_2010/pop_2008) - 1) * 100,
+         change_2012 = ((pop_2012/pop_2010) - 1) * 100,
+         change_2014 = ((pop_2014/pop_2012) - 1) * 100,
+         change_2016 = ((pop_2016/pop_2014) - 1) * 100,
+         change_2018 = ((pop_2018/pop_2016) - 1) * 100,
+         change_2020 = ((pop_2020/pop_2018) - 1) * 100) %>% 
+  mutate(change_2000 = change_2002) %>% 
+  select(name, state, change_2002:change_2000) %>% 
+  group_by(name, state) %>% 
+  pivot_longer(cols = starts_with("change_"), 
+               names_to = "year", names_prefix = "change_",
+               values_to = "change") %>% 
+  ungroup() %>% 
+  arrange(name, state, year) %>% 
+  mutate(year = as.numeric(str_trim(year))) %>% 
+  select(year, name, state, change)
+
+```
+
+```{r, message = F, warning = F}
+
+state_var <- "wisconsin"
+get_stats <- function(state_var){
+
+  race10_18 <- read.csv(paste0(getwd(), "/data/demographic/", state_var, 
+                  "_dem19.csv"), skip = 0) %>% 
+    clean_names() %>% 
+    select(!sumlev) %>% 
+    select(!state) %>% 
+    select(!county) %>% 
+    rename(state = stname, name = ctyname) %>% 
+    filter(!year %in% c(1:2)) %>% 
+    mutate(year = year + 2007) %>% 
+    mutate(nhw_total = nhwa_male + nhwa_female) %>% 
+    select(state, name, year, tot_pop, nhw_total) %>% 
+    group_by(year, name, state) %>% 
+    summarise(tot_pop = sum(tot_pop),
+              nhw_total = sum(nhw_total)) %>% 
+    ungroup() %>% 
+    mutate(non_hisp_white = (nhw_total / tot_pop) * 100) %>% 
+    select(year, name, state, non_hisp_white)
+  
+  race00_08 <- read.csv(paste0(getwd(), "/data/demographic/", state_var, 
+                  "_dem10.csv"), skip = 0) %>% 
+    clean_names() %>% 
+    select(!sumlev) %>% 
+    select(!state) %>% 
+    select(!county) %>% 
+    rename(state = stname, name = ctyname) %>% 
+    filter(!year %in% c(1)) %>% 
+    mutate(year = year + 1998) %>% 
+    mutate(nhw_total = nhwa_male + nhwa_female) %>% 
+    select(state, name, year, tot_pop, nhw_total) %>% 
+    group_by(year, name, state) %>% 
+    summarise(tot_pop = sum(tot_pop),
+              nhw_total = sum(nhw_total)) %>% 
+    ungroup() %>% 
+    mutate(non_hisp_white = (nhw_total / tot_pop) * 100) %>% 
+    select(year, name, state, non_hisp_white) %>% 
+    filter(!year %in% c(2010, 2011))
+  
+  rbind(race00_08, race10_18) %>% arrange(name) %>% 
+    filter(!year %in% c(2001, 2003, 2005, 2007, 2009, 2011, 2013, 2015, 2017)) %>% 
+    mutate(year = ifelse(year == 2019, 2020, year)) %>% 
+    mutate(name = gsub(" County", "", name)) %>% 
+    mutate(state = ifelse(state_var == "michigan", "MI", 
+                          ifelse(state_var == "minnesota", "MN", "WI")))
+  
+}
+
+partial_dem_dat <- rbind(get_stats("michigan"), get_stats("minnesota"), get_stats("wisconsin"))
+
+all_dem_dat <- inner_join(partial_dem_dat, pop_change_data, by = c("year", "name", "state"))
+
+```
+
+```{r}
+
+data_compiled <- full_join(counties, nonmetro_status) %>%
+  full_join(rucc_status) %>% 
+  full_join(all_elections) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(rucc_cat == "mostly rural") %>% 
+  full_join(all_dem_dat, by = c("name", "state", "year"))
+
+# elections viewer
+data_compiled %>% 
+  mutate(rucc = as.numeric(rucc)) %>%
+  ggplot(.) + geom_sf(aes(fill = rucc_cat)) + theme_void() + 
+  labs(fill = "Type")
+
+data_compiled %>% distinct(name)
+
+```
+
+```{r}
+
+
+stargazer(lm(rep_perc ~ change + non_hisp_white + year + office + state, 
+             data = data_compiled %>% mutate(year = as.factor(year))), type = "text")
+
+```
+
+
+
+
+
+```{r, warning = F, message = F}
+
+# NOT IN USE
+
+mi_results <- function(year_var){
+
+  election_results <- read_xlsx(paste0(getwd(),"/data/political/michigan/", 
+                                       year_var, ".xlsx")) %>% 
+    clean_names() %>% 
+    rename(office = office_description) %>% 
+    filter(office %in% c("United States Senator 6 Year Term (1) Position", 
+                         "President of the United States 4 Year Term (1) Position",
+                         "Governor 4 Year Term (1) Position")) %>% 
+    mutate(office = ifelse(office == "United States Senator 6 Year Term (1) Position",
+                           "Senate", ifelse(office == "Governor 4 Year Term (1) Position", 
+                                           "Governor", "President"))) %>% 
+    mutate(county_name = str_to_title(county_name)) %>% 
+    rename(county = county_name) %>% 
+    mutate(candidate = paste0(candidate_last_name, ", ", candidate_first_name)) %>% 
+    select(county, office, party_name, candidate, candidate_votes) 
+
+  election_results %>% 
+    group_by(county, office)%>% 
+    summarize(total_votes = sum(candidate_votes)) %>% 
+    ungroup() %>% 
+    full_join(election_results, by = c("county", "office")) %>% 
+    mutate(vote_perc = (candidate_votes / total_votes) * 100) %>% 
+    select(county, office, party_name, candidate, vote_perc) %>% 
+    filter(party_name %in% c("REP", "DEM"))
+
+}
+
+mi_results(2010)
+
+```
+
+
+
+
+
+
+
+
+
+
+
